@@ -35,6 +35,8 @@
   .rec:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
   .tag { display: inline-block; background: var(--code); border-radius: 6px; padding: 1px 8px; font-size: .8rem; color: var(--muted); }
   a { color: var(--accent); }
+  ol { padding-left: 20px; } li { margin-bottom: 6px; }
+  code { background: var(--code); padding: 1px 5px; border-radius: 4px; }
   .hidden { display: none; }
 </style>
 </head>
@@ -52,6 +54,20 @@
     <h2>Not supported</h2>
     <p>Web NFC only works in <b>Chrome on Android</b>, over <b>HTTPS</b>, on a phone with NFC turned on.
        iPhone (Safari/Chrome) does not support reading NFC from web pages.</p>
+  </div>
+
+  <div id="shortcut" class="card hidden">
+    <h2>iPhone: use Shortcuts</h2>
+    <p>iOS browsers can't read NFC directly, but the Shortcuts app can scan a tag and open this page with the data. Create a shortcut with these actions:</p>
+    <ol>
+      <li><b>Scan NFC Tag</b></li>
+      <li><b>URL Encode</b> the tag's <i>Payload</i> (input: Payload from step 1)</li>
+      <li><b>URL Encode</b> the tag's <i>Identifier</i></li>
+      <li><b>Text</b>:<pre id="tpl"></pre></li>
+      <li><b>Open URLs</b> with that Text</li>
+    </ol>
+    <p>In the Text, type the address then insert the two encoded results as variables where shown. Add the shortcut to your Home Screen, tap it, and hold your phone to a tag.</p>
+    <p style="color:var(--muted);font-size:.9rem">Optional parameters: <code>hex=</code> (hex bytes) or <code>b64=</code> (base64 bytes) are decoded and shown in the raw view.</p>
   </div>
 
   <div id="results" class="hidden">
@@ -179,6 +195,54 @@ function render(ev) {
   $('raw').innerHTML = rawParts.join('');
 }
 
+// ---- iOS Shortcuts bridge: data arrives as URL query parameters ----
+function bytesFromHex(h) {
+  const m = (h || '').replace(/0x/gi, '').match(/[0-9a-f]{2}/gi) || [];
+  return Uint8Array.from(m.map(x => parseInt(x, 16)));
+}
+function bytesFromB64(b) {
+  try { const bin = atob(b.replace(/-/g, '+').replace(/_/g, '/').replace(/ /g, '+'));
+        return Uint8Array.from(bin, c => c.charCodeAt(0)); } catch { return new Uint8Array(); }
+}
+function classifyText(t) {
+  const fields = [];
+  const trimmed = t.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(trimmed) || /^(tel|mailto|sms|geo):\S+$/i.test(trimmed)) {
+    fields.push(['URL', trimmed, trimmed]);
+  } else {
+    let json = null;
+    if (/^[\[{]/.test(trimmed)) { try { json = JSON.stringify(JSON.parse(trimmed), null, 2); } catch {} }
+    if (json) fields.push(['JSON', json]); else fields.push(['Text', t]);
+  }
+  return fields;
+}
+function renderFromParams(q) {
+  $('results').classList.remove('hidden');
+  const id = q.get('id'), payload = q.get('payload');
+  const bytes = q.get('hex') ? bytesFromHex(q.get('hex')) : q.get('b64') ? bytesFromB64(q.get('b64')) : null;
+  const textBytes = payload != null ? new TextEncoder().encode(payload) : null;
+
+  const info = [['Source', 'iOS Shortcuts'], ['Tag ID', id || '(not provided)'], ['Read at', new Date().toLocaleString()]];
+  $('tagInfo').innerHTML = info.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+
+  let fields = [];
+  if (payload) fields = fields.concat(classifyText(payload));
+  if (bytes && bytes.length) fields = fields.concat(classifyText(new TextDecoder().decode(bytes)).map(f => ['Decoded bytes: ' + f[0], f[1], f[2]]));
+  if (!fields.length) fields.push(['Payload', '(empty — tag may be blank or non-NDEF)']);
+  $('parsed').innerHTML = '<div class="rec"><dl>' + fields.map(([k, v, href]) => {
+    const val = href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(v)}</a>`
+                     : (String(v).includes('\n') ? `<pre>${esc(v)}</pre>` : esc(v));
+    return `<dt>${esc(k)}</dt><dd>${val}</dd>`;
+  }).join('') + '</dl></div>';
+
+  const parts = [`<div><span class="tag">query string</span><pre>${esc(decodeURIComponent(location.search.slice(1).replace(/\+/g, ' ')))}</pre></div>`];
+  if (id) parts.push(`<div class="rec"><span class="tag">identifier</span><pre>${esc(id)}</pre></div>`);
+  if (textBytes) parts.push(`<div class="rec"><span class="tag">payload bytes (UTF-8)</span><pre>${esc(hexdump(textBytes))}</pre></div>`);
+  if (bytes) parts.push(`<div class="rec"><span class="tag">supplied bytes</span><pre>${esc(hexdump(bytes))}</pre></div>`);
+  $('raw').innerHTML = parts.join('');
+  setStatus('Loaded tag data from Shortcuts.', 'ok');
+}
+
 async function start() {
   if (!('NDEFReader' in window)) { $('unsupported').classList.remove('hidden'); return setStatus('Web NFC unavailable.', 'err'); }
   try {
@@ -204,7 +268,20 @@ function stop() {
 
 $('scan').addEventListener('click', start);
 $('stop').addEventListener('click', stop);
-if (!('NDEFReader' in window)) $('unsupported').classList.remove('hidden');
+
+(function init() {
+  const q = new URLSearchParams(location.search);
+  const fromShortcut = ['id', 'payload', 'hex', 'b64'].some(k => q.has(k));
+  const noNfc = !('NDEFReader' in window);
+  const base = location.origin + location.pathname;
+  $('tpl').textContent = base + '?id=[Encoded Identifier]&payload=[Encoded Payload]';
+  if (noNfc) {
+    $('scan').disabled = true;
+    if (!fromShortcut) { $('unsupported').classList.remove('hidden'); }
+    $('shortcut').classList.remove('hidden');
+  }
+  if (fromShortcut) renderFromParams(q);
+})();
 </script>
 </body>
 </html>
