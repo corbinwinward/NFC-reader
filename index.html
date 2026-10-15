@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#111827">
+<title>NFC Tag Reader</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #111827; --muted: #6b7280;
+    --accent: #2563eb; --border: #e5e7eb; --code: #f3f4f6; --err: #b91c1c; --ok: #15803d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0f17; --card: #151b27; --text: #e5e7eb; --muted: #9ca3af;
+            --accent: #60a5fa; --border: #263044; --code: #0f1522; --err: #f87171; --ok: #4ade80; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; margin: 8px 0 16px; }
+  h2 { font-size: 1rem; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+  button { font: inherit; border: 0; border-radius: 10px; padding: 14px 18px; background: var(--accent);
+           color: #fff; font-weight: 600; width: 100%; }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); margin-top: 8px; }
+  button:disabled { opacity: .5; }
+  #status { margin-top: 10px; font-size: .95rem; color: var(--muted); }
+  #status.err { color: var(--err); } #status.ok { color: var(--ok); }
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; }
+  dt { color: var(--muted); } dd { margin: 0; word-break: break-all; }
+  pre { background: var(--code); border-radius: 8px; padding: 10px; overflow-x: auto; margin: 8px 0 0;
+        font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; }
+  .rec { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+  .rec:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .tag { display: inline-block; background: var(--code); border-radius: 6px; padding: 1px 8px; font-size: .8rem; color: var(--muted); }
+  a { color: var(--accent); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NFC Tag Reader</h1>
+
+  <div class="card">
+    <button id="scan">Scan NFC tag</button>
+    <button id="stop" class="secondary hidden">Stop scanning</button>
+    <div id="status">Tap “Scan”, then hold the back of your phone against a tag.</div>
+  </div>
+
+  <div id="unsupported" class="card hidden">
+    <h2>Not supported</h2>
+    <p>Web NFC only works in <b>Chrome on Android</b>, over <b>HTTPS</b>, on a phone with NFC turned on.
+       iPhone (Safari/Chrome) does not support reading NFC from web pages.</p>
+  </div>
+
+  <div id="results" class="hidden">
+    <div class="card"><h2>Tag</h2><dl id="tagInfo"></dl></div>
+    <div class="card"><h2>Parsed records</h2><div id="parsed"></div></div>
+    <div class="card"><h2>Raw data</h2><div id="raw"></div></div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let controller = null;
+
+const hex = buf => Array.from(new Uint8Array(buf.buffer ?? buf, buf.byteOffset ?? 0, buf.byteLength))
+  .map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
+
+function ascii(buf) {
+  const u = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  return Array.from(u).map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+}
+
+function hexdump(dv) {
+  const u = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+  const lines = [];
+  for (let i = 0; i < u.length; i += 16) {
+    const chunk = u.slice(i, i + 16);
+    const h = Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ');
+    const a = Array.from(chunk).map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : '.').join('');
+    lines.push(i.toString(16).padStart(4, '0') + '  ' + h.padEnd(47) + '  ' + a);
+  }
+  return lines.join('\n') || '(empty)';
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function setStatus(msg, cls = '') { const s = $('status'); s.textContent = msg; s.className = cls; }
+
+// Decode the payload of one NDEF record into a human-readable form.
+function parseRecord(rec) {
+  const out = { type: rec.recordType, mediaType: rec.mediaType, id: rec.id, lang: rec.lang, fields: [] };
+  const dv = rec.data;
+  const dec = (enc = 'utf-8') => dv ? new TextDecoder(enc).decode(dv) : '';
+  switch (rec.recordType) {
+    case 'text':
+      out.fields.push(['Text', dec(rec.encoding || 'utf-8')]);
+      if (rec.lang) out.fields.push(['Language', rec.lang]);
+      if (rec.encoding) out.fields.push(['Encoding', rec.encoding]);
+      break;
+    case 'url':
+    case 'absolute-url': {
+      const u = dec();
+      out.fields.push(['URL', u, /^(https?:|tel:|mailto:|sms:|geo:)/i.test(u) ? u : null]);
+      break;
+    }
+    case 'smart-poster':
+      try {
+        const nested = typeof rec.toRecords === 'function' ? rec.toRecords() : null;
+        if (nested) nested.forEach(n => parseRecord(n).fields.forEach(([k, v, h]) => out.fields.push([k, v, h])));
+        else throw new Error('toRecords unavailable');
+      } catch {
+        out.fields.push(['Payload (hex)', dv ? hex(dv) : '']);
+      }
+      break;
+    case 'mime':
+      out.fields.push(['MIME type', rec.mediaType || '']);
+      if (/json/i.test(rec.mediaType || '')) {
+        try { out.fields.push(['JSON', JSON.stringify(JSON.parse(dec()), null, 2)]); }
+        catch { out.fields.push(['Text', dec()]); }
+      } else if (/^text\//i.test(rec.mediaType || '') || /xml|vcard|calendar/i.test(rec.mediaType || '')) {
+        out.fields.push(['Text', dec()]);
+      } else {
+        out.fields.push(['Bytes', dv ? dv.byteLength : 0]);
+      }
+      break;
+    case 'empty':
+      out.fields.push(['Empty record', '']);
+      break;
+    case 'unknown':
+      out.fields.push(['Unknown payload', dv ? hex(dv) : '']);
+      break;
+    default: // external types, e.g. "android.com:pkg"
+      out.fields.push(['Text (best effort)', dv ? ascii(dv) : '']);
+  }
+  return out;
+}
+
+function render(ev) {
+  $('results').classList.remove('hidden');
+
+  // Tag-level info
+  const info = [['Serial number', ev.serialNumber || '(not provided)']];
+  const records = ev.message ? ev.message.records : [];
+  info.push(['NDEF records', records.length]);
+  info.push(['Read at', new Date().toLocaleString()]);
+  $('tagInfo').innerHTML = info.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+
+  // Parsed view
+  if (!records.length) {
+    $('parsed').innerHTML = '<p>No NDEF records on this tag (it may be blank or use a non-NDEF format).</p>';
+  } else {
+    $('parsed').innerHTML = records.map((r, i) => {
+      const p = parseRecord(r);
+      const meta = [`<span class="tag">#${i + 1}</span>`, `<span class="tag">${esc(p.type)}</span>`];
+      if (p.id) meta.push(`<span class="tag">id: ${esc(p.id)}</span>`);
+      const fields = p.fields.map(([k, v, href]) => {
+        const val = href ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(v)}</a>`
+                         : (String(v).includes('\n') ? `<pre>${esc(v)}</pre>` : esc(v));
+        return `<dt>${esc(k)}</dt><dd>${val}</dd>`;
+      }).join('');
+      return `<div class="rec"><div>${meta.join(' ')}</div><dl style="margin-top:8px">${fields}</dl></div>`;
+    }).join('');
+  }
+
+  // Raw view
+  const rawParts = [];
+  rawParts.push(`<div><span class="tag">serialNumber</span><pre>${esc(ev.serialNumber || '(none)')}</pre></div>`);
+  records.forEach((r, i) => {
+    const head = `recordType: ${r.recordType}` + (r.mediaType ? `\nmediaType: ${r.mediaType}` : '') +
+                 (r.id ? `\nid: ${r.id}` : '') + (r.encoding ? `\nencoding: ${r.encoding}` : '') +
+                 (r.lang ? `\nlang: ${r.lang}` : '') + `\nbytes: ${r.data ? r.data.byteLength : 0}`;
+    rawParts.push(`<div class="rec"><span class="tag">record #${i + 1}</span><pre>${esc(head)}\n\n${esc(r.data ? hexdump(r.data) : '(no data)')}</pre></div>`);
+  });
+  $('raw').innerHTML = rawParts.join('');
+}
+
+async function start() {
+  if (!('NDEFReader' in window)) { $('unsupported').classList.remove('hidden'); return setStatus('Web NFC unavailable.', 'err'); }
+  try {
+    const reader = new NDEFReader();
+    controller = new AbortController();
+    reader.onreadingerror = () => setStatus('Tag detected but could not be read. Try again.', 'err');
+    reader.onreading = ev => { render(ev); setStatus('Tag read. Scan another any time.', 'ok'); if (navigator.vibrate) navigator.vibrate(60); };
+    await reader.scan({ signal: controller.signal });
+    $('scan').classList.add('hidden'); $('stop').classList.remove('hidden');
+    setStatus('Scanning… hold your phone against a tag.');
+  } catch (e) {
+    setStatus(e.name === 'NotAllowedError' ? 'NFC permission denied.' :
+              e.name === 'NotSupportedError' ? 'NFC is off or unsupported on this device.' : `Error: ${e.message}`, 'err');
+  }
+}
+
+function stop() {
+  if (controller) controller.abort();
+  controller = null;
+  $('scan').classList.remove('hidden'); $('stop').classList.add('hidden');
+  setStatus('Stopped.');
+}
+
+$('scan').addEventListener('click', start);
+$('stop').addEventListener('click', stop);
+if (!('NDEFReader' in window)) $('unsupported').classList.remove('hidden');
+</script>
+</body>
+</html>
