@@ -6,6 +6,6 @@ A single-page website (`index.html`) that reads an NFC tag in the browser and sh
 
 Host it with GitHub Pages (Settings → Pages → deploy from branch, root), or any static HTTPS host, then open the URL on your phone.
 
-## iPhone (Shortcuts bridge)
+## iPhone
 
-iOS browsers can't use Web NFC. Instead, create a shortcut: **Scan NFC Tag** → **URL Encode** the Payload and Identifier → **Text** `https://YOUR-SITE/?id=<encoded id>&payload=<encoded payload>` → **Open URLs**. The page decodes the query string (`id`, `payload`, optional `hex` / `b64`) and shows parsed and raw views.
+iOS browsers can't use Web NFC, and Shortcuts has no action that returns tag data. Use an Android phone, or an iOS NFC app. The page can still display data passed as `?id=`, `payload=`, `hex=` or `b64=`.

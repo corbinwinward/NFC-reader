@@ -57,17 +57,9 @@
   </div>
 
   <div id="shortcut" class="card hidden">
-    <h2>iPhone: use Shortcuts</h2>
-    <p>iOS browsers can't read NFC directly, but the Shortcuts app can scan a tag and open this page with the data. Create a shortcut with these actions:</p>
-    <ol>
-      <li><b>Scan NFC Tag</b></li>
-      <li><b>URL Encode</b> the tag's <i>Payload</i> (input: Payload from step 1)</li>
-      <li><b>URL Encode</b> the tag's <i>Identifier</i></li>
-      <li><b>Text</b>:<pre id="tpl"></pre></li>
-      <li><b>Open URLs</b> with that Text</li>
-    </ol>
-    <p>In the Text, type the address then insert the two encoded results as variables where shown. Add the shortcut to your Home Screen, tap it, and hold your phone to a tag.</p>
-    <p style="color:var(--muted);font-size:.9rem">Optional parameters: <code>hex=</code> (hex bytes) or <code>b64=</code> (base64 bytes) are decoded and shown in the raw view.</p>
+    <h2>iPhone</h2>
+    <p>iPhone browsers can't read NFC, and the Shortcuts app can't pass tag data to a web page. Use an Android phone with Chrome, or an iOS NFC app.</p>
+    <p style="color:var(--muted);font-size:.9rem">This page can still display tag data passed in the URL: <code>?id=&amp;payload=</code>, <code>hex=</code> or <code>b64=</code>.</p>
   </div>
 
   <div id="results" class="hidden">
@@ -273,8 +265,6 @@ $('stop').addEventListener('click', stop);
   const q = new URLSearchParams(location.search);
   const fromShortcut = ['id', 'payload', 'hex', 'b64'].some(k => q.has(k));
   const noNfc = !('NDEFReader' in window);
-  const base = location.origin + location.pathname;
-  $('tpl').textContent = base + '?id=[Encoded Identifier]&payload=[Encoded Payload]';
   if (noNfc) {
     $('scan').disabled = true;
     if (!fromShortcut) { $('unsupported').classList.remove('hidden'); }
